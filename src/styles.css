@@ -58,3 +58,4 @@ html[data-theme="dark"] .dropdown,html[data-theme="dark"] .toast{background:#1a1
 html[data-theme="dark"] .detail-list span{border-color:#302d3b}
 @media(max-width:760px){.detail-hero{grid-template-columns:1fr}.detail-info h1{font-size:24px}}
 .smart-form{margin-bottom:18px}.link-actions{display:flex;gap:8px;flex-wrap:wrap}.danger-btn{color:#bf5b5b!important}.danger-btn svg{width:14px}
+.admin-detail{max-width:1180px}.release-data.vertical{display:flex;flex-direction:column}.admin-form{margin-bottom:18px}
