@@ -288,6 +288,7 @@ class PromoRequestBody(BaseModel):
 class SmartLinkBody(BaseModel):
     release_id: int | None = None
     title: str = Field(min_length=1, max_length=160)
+    slug: str | None = Field(default=None, max_length=180)
     links: dict[str, str] = Field(default_factory=dict)
 
 
@@ -635,9 +636,15 @@ def list_smart_links(user=Depends(current_user)):
 
 @app.post("/smart-links", status_code=201)
 def create_smart_link(body: SmartLinkBody, user=Depends(current_user)):
-    base = slugify(body.title)
+    if not body.links:
+        raise HTTPException(400, "Добавьте хотя бы одну ссылку на площадку")
+    base = slugify(body.slug or body.title)
     slug = base
     with db() as con:
+        if body.release_id:
+            release = con.execute("SELECT id FROM releases WHERE id=? AND user_id=?", (body.release_id, user["id"])).fetchone()
+            if not release:
+                raise HTTPException(404, "Релиз не найден")
         counter = 2
         while con.execute("SELECT 1 FROM smart_links WHERE slug=?", (slug,)).fetchone():
             slug = f"{base}-{counter}"
@@ -646,6 +653,16 @@ def create_smart_link(body: SmartLinkBody, user=Depends(current_user)):
                           VALUES(?,?,?,?,?,?)""",
                           (user["id"], body.release_id, body.title, slug, json.dumps(body.links, ensure_ascii=False), now()))
     return {"id": cur.lastrowid, "title": body.title, "slug": slug, "links": body.links, "url": f"/p/{slug}"}
+
+
+@app.delete("/smart-links/{link_id}")
+def delete_smart_link(link_id: int, user=Depends(current_user)):
+    with db() as con:
+        row = con.execute("SELECT id FROM smart_links WHERE id=? AND user_id=?", (link_id, user["id"])).fetchone()
+        if not row:
+            raise HTTPException(404, "Линкс не найден")
+        con.execute("DELETE FROM smart_links WHERE id=?", (link_id,))
+    return {"ok": True}
 
 
 @app.get("/p/{slug}")
