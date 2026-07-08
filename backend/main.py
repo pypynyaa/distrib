@@ -262,6 +262,10 @@ class TicketBody(BaseModel):
     subject: str = Field(min_length=2, max_length=160)
 
 
+class TicketStatusBody(BaseModel):
+    status: Literal["Открыт", "В работе", "Закрыт"]
+
+
 class ProfileBody(BaseModel):
     artist_name: str = Field(min_length=2, max_length=80)
     bio: str | None = Field(default=None, max_length=2000)
@@ -271,7 +275,7 @@ class AdminBody(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     name: str
-    role: Literal["admin", "moderator", "support"] = "admin"
+    role: Literal["admin", "moderator", "support", "finance"] = "admin"
 
 
 class AccountStatusBody(BaseModel):
@@ -310,7 +314,7 @@ def current_user(authorization: str | None = Header(default=None)):
 
 
 def require_staff(user=Depends(current_user)):
-    if user["role"] not in {"owner", "admin", "moderator", "support"}:
+    if user["role"] not in {"owner", "admin", "moderator", "support", "finance"}:
         raise HTTPException(403, "Недостаточно прав")
     return user
 
@@ -576,6 +580,11 @@ def create_ticket(body: TicketBody, user=Depends(current_user)):
 @app.get("/support/tickets/{ticket_id}/messages")
 def ticket_messages(ticket_id: int, user=Depends(current_user)):
     with db() as con:
+        ticket = con.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
+        if not ticket:
+            raise HTTPException(404, "Диалог не найден")
+        if user["role"] == "artist" and ticket["user_id"] != user["id"]:
+            raise HTTPException(403, "Нет доступа")
         rows = con.execute("SELECT messages.*,users.artist_name,users.role FROM messages JOIN users ON users.id=messages.sender_id WHERE ticket_id=? ORDER BY id", (ticket_id,)).fetchall()
     return [row_dict(x) for x in rows]
 
@@ -588,9 +597,30 @@ def send_message(ticket_id: int, body: MessageBody, user=Depends(current_user)):
             raise HTTPException(404, "Диалог не найден")
         if user["role"] == "artist" and ticket["user_id"] != user["id"]:
             raise HTTPException(403, "Нет доступа")
+        con.execute("UPDATE tickets SET status=? WHERE id=? AND status='Открыт'", ("В работе" if user["role"] != "artist" else "Открыт", ticket_id))
         cur = con.execute("INSERT INTO messages(ticket_id,sender_id,text,created_at) VALUES(?,?,?,?)",
                           (ticket_id, user["id"], body.text, now()))
+        if user["role"] == "artist":
+            staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin','support') AND active=1").fetchall()
+            for staff_row in staff_rows:
+                notify(con, staff_row["id"], "Новое сообщение поддержки", f"{user['artist_name']}: {body.text[:120]}")
+        else:
+            notify(con, ticket["user_id"], "Ответ поддержки", body.text[:160])
     return {"id": cur.lastrowid, "ticket_id": ticket_id, "sender_id": user["id"], "text": body.text, "created_at": now()}
+
+
+@app.patch("/support/tickets/{ticket_id}")
+def update_ticket(ticket_id: int, body: TicketStatusBody, user=Depends(current_user)):
+    with db() as con:
+        ticket = con.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
+        if not ticket:
+            raise HTTPException(404, "Диалог не найден")
+        if user["role"] == "artist" and ticket["user_id"] != user["id"]:
+            raise HTTPException(403, "Нет доступа")
+        con.execute("UPDATE tickets SET status=? WHERE id=?", (body.status, ticket_id))
+        if user["role"] != "artist":
+            notify(con, ticket["user_id"], "Статус обращения обновлён", f"Ваш тикет: {body.status}")
+    return {"ok": True, "status": body.status}
 
 
 @app.post("/promo/requests", status_code=201)
