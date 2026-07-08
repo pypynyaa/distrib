@@ -289,6 +289,10 @@ class PromoRequestBody(BaseModel):
     artist_info: str = Field(min_length=5, max_length=4000)
 
 
+class PromoRequestStatusBody(BaseModel):
+    status: Literal["Новая", "В работе", "Отправлено редакторам", "Выполнено", "Отклонено"]
+
+
 class SmartLinkBody(BaseModel):
     release_id: int | None = None
     title: str = Field(min_length=1, max_length=160)
@@ -649,6 +653,17 @@ def list_promo_requests(user=Depends(current_user)):
                                FROM promo_requests JOIN users ON users.id=promo_requests.user_id
                                ORDER BY promo_requests.id DESC""").fetchall()
     return [row_dict(x) for x in rows]
+
+
+@app.patch("/promo/requests/{request_id}")
+def update_promo_request(request_id: int, body: PromoRequestStatusBody, staff=Depends(require_staff)):
+    with db() as con:
+        row = con.execute("SELECT * FROM promo_requests WHERE id=?", (request_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Промо-заявка не найдена")
+        con.execute("UPDATE promo_requests SET status=? WHERE id=?", (body.status, request_id))
+        notify(con, row["user_id"], "Статус промо-заявки обновлён", f"Заявка на питчинг: {body.status}")
+    return {"ok": True, "status": body.status}
 
 
 @app.get("/smart-links")
