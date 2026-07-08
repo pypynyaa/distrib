@@ -4,4 +4,5 @@ dist/
 __pycache__/
 *.pyc
 backend/insomnia.db
+backend/uploads/
 .DS_Store

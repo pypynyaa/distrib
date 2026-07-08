@@ -4,12 +4,7 @@ MVP музыкальной дистрибуции: React-интерфейс ар
 
 ## Запуск
 
-```bash
-npm install
-npm run dev
-```
-
-В отдельном терминале:
+Backend:
 
 ```bash
 python3 -m venv .venv
@@ -17,6 +12,32 @@ source .venv/bin/activate
 pip install -r backend/requirements.txt
 uvicorn backend.main:app --reload --port 8000
 ```
+
+Frontend:
+
+```bash
+npm install
+npm run dev
+```
+
+Открыть сайт: `http://localhost:5173`.
+
+Документация API после запуска: `http://localhost:8000/docs`.
+
+## Почтовые уведомления
+
+Письма отправляются через SMTP, если заданы переменные окружения:
+
+```bash
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=noreply@example.com
+SMTP_PASSWORD=change-me
+SMTP_FROM="Insomnia Market <noreply@example.com>"
+SMTP_TLS=1
+```
+
+Если SMTP не настроен, уведомления всё равно создаются в таблице `notifications`, а email-уведомления получают статус очереди с текстом ошибки.
 
 Демо-аккаунты API:
 
@@ -28,8 +49,6 @@ uvicorn backend.main:app --reload --port 8000
 - `artist@insomnia.market` открывает обычный кабинет артиста;
 - `owner@insomnia.market` открывает админ-сайт команды.
 
-Документация API после запуска: `http://localhost:8000/docs`.
-
 ## Публичное визуальное демо
 
 При публикации через GitHub Pages автоматически включается автономный демо-режим. Он не требует Python API: заказчик может войти, переключать светлую/тёмную тему и прокликать все основные экраны.
@@ -39,6 +58,8 @@ uvicorn backend.main:app --reload --port 8000
 ## Возможности
 
 - регистрация и вход с серверными сессиями;
+- профиль артиста и загрузка аватарки;
+- загрузка файлов релиза: обложка и аудио;
 - загрузка релизов и ручная модерация;
 - принятие или возврат в черновик с причиной;
 - ручной ввод UPC и ISRC после принятия релиза;

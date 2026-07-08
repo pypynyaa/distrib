@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
+import smtplib
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
 
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "insomnia.db"
+UPLOAD_DIR = ROOT / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="Insomnia Market API", version="1.0.0")
 app.add_middleware(
@@ -24,6 +30,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @contextmanager
@@ -50,12 +57,38 @@ def row_dict(row):
     return dict(row) if row else None
 
 
+def public_url(path: str | None) -> str | None:
+    return path if path else None
+
+
+def slugify(value: str) -> str:
+    cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned or secrets.token_urlsafe(5)
+
+
+def release_dict(row):
+    data = row_dict(row)
+    if not data:
+        return None
+    for key in ("platforms", "contributors"):
+        if data.get(key):
+            try:
+                data[key] = json.loads(data[key])
+            except json.JSONDecodeError:
+                data[key] = []
+        else:
+            data[key] = []
+    return data
+
+
 def initialize():
     schema = """
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL,
       artist_name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'artist', active INTEGER DEFAULT 1,
-      created_at TEXT NOT NULL
+      avatar_url TEXT, bio TEXT, created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -66,6 +99,7 @@ def initialize():
       release_type TEXT NOT NULL, genre TEXT, language TEXT, release_date TEXT,
       cover_url TEXT, status TEXT NOT NULL DEFAULT 'На модерации', rejection_reason TEXT,
       upc TEXT, isrc TEXT,
+      audio_url TEXT, lyrics TEXT, contributors TEXT, platforms TEXT, comment TEXT,
       streams INTEGER DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS finance (
@@ -91,16 +125,39 @@ def initialize():
     );
     CREATE TABLE IF NOT EXISTS notifications (
       id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), channel TEXT NOT NULL,
-      subject TEXT NOT NULL, body TEXT NOT NULL, read INTEGER DEFAULT 0, created_at TEXT NOT NULL
+      subject TEXT NOT NULL, body TEXT NOT NULL, read INTEGER DEFAULT 0, sent INTEGER DEFAULT 0,
+      error TEXT, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS promo_requests (
+      id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), release_id INTEGER REFERENCES releases(id),
+      release_info TEXT NOT NULL, focus_track TEXT, artist_info TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'Новая', created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS smart_links (
+      id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), release_id INTEGER REFERENCES releases(id),
+      title TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, links TEXT NOT NULL, created_at TEXT NOT NULL
     );
     """
     with db() as con:
         con.executescript(schema)
+        user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)").fetchall()}
+        if "avatar_url" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
+        if "bio" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN bio TEXT")
         release_columns = {row["name"] for row in con.execute("PRAGMA table_info(releases)").fetchall()}
         if "upc" not in release_columns:
             con.execute("ALTER TABLE releases ADD COLUMN upc TEXT")
         if "isrc" not in release_columns:
             con.execute("ALTER TABLE releases ADD COLUMN isrc TEXT")
+        for column in ("audio_url", "lyrics", "contributors", "platforms", "comment"):
+            if column not in release_columns:
+                con.execute(f"ALTER TABLE releases ADD COLUMN {column} TEXT")
+        notification_columns = {row["name"] for row in con.execute("PRAGMA table_info(notifications)").fetchall()}
+        if "sent" not in notification_columns:
+            con.execute("ALTER TABLE notifications ADD COLUMN sent INTEGER DEFAULT 0")
+        if "error" not in notification_columns:
+            con.execute("ALTER TABLE notifications ADD COLUMN error TEXT")
         if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             con.execute("INSERT INTO users(email,password,artist_name,role,created_at) VALUES(?,?,?,?,?)",
                         ("artist@insomnia.market", password_hash("insomnia"), "Luna Ray", "artist", now()))
@@ -145,6 +202,11 @@ class ReleaseBody(BaseModel):
     language: str = "Русский"
     release_date: str | None = None
     cover_url: str | None = None
+    audio_url: str | None = None
+    lyrics: str | None = None
+    contributors: str | None = None
+    platforms: list[str] = Field(default_factory=list)
+    comment: str | None = None
 
 
 class ModerationBody(BaseModel):
@@ -182,6 +244,15 @@ class MessageBody(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class TicketBody(BaseModel):
+    subject: str = Field(min_length=2, max_length=160)
+
+
+class ProfileBody(BaseModel):
+    artist_name: str = Field(min_length=2, max_length=80)
+    bio: str | None = Field(default=None, max_length=2000)
+
+
 class AdminBody(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
@@ -191,6 +262,19 @@ class AdminBody(BaseModel):
 
 class AccountStatusBody(BaseModel):
     active: bool
+
+
+class PromoRequestBody(BaseModel):
+    release_id: int | None = None
+    release_info: str = Field(min_length=5, max_length=4000)
+    focus_track: str | None = Field(default=None, max_length=200)
+    artist_info: str = Field(min_length=5, max_length=4000)
+
+
+class SmartLinkBody(BaseModel):
+    release_id: int | None = None
+    title: str = Field(min_length=1, max_length=160)
+    links: dict[str, str] = Field(default_factory=dict)
 
 
 def current_user(authorization: str | None = Header(default=None)):
@@ -212,14 +296,95 @@ def require_staff(user=Depends(current_user)):
 
 def notify(con, user_id: int, subject: str, body: str):
     """Stores both an in-app and email notification for the mail worker."""
-    for channel in ("app", "email"):
-        con.execute("INSERT INTO notifications(user_id,channel,subject,body,created_at) VALUES(?,?,?,?,?)",
-                    (user_id, channel, subject, body, now()))
+    con.execute("INSERT INTO notifications(user_id,channel,subject,body,sent,created_at) VALUES(?,?,?,?,?,?)",
+                (user_id, "app", subject, body, 1, now()))
+    email_row = con.execute("SELECT email FROM users WHERE id=?", (user_id,)).fetchone()
+    sent = 0
+    error = None
+    if email_row:
+        sent, error = send_email(email_row["email"], subject, body)
+    con.execute("INSERT INTO notifications(user_id,channel,subject,body,sent,error,created_at) VALUES(?,?,?,?,?,?,?)",
+                (user_id, "email", subject, body, 1 if sent else 0, error, now()))
+
+
+def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str | None]:
+    host = os.getenv("SMTP_HOST")
+    if not host:
+        return False, "SMTP не настроен: письмо сохранено в очереди"
+    port = int(os.getenv("SMTP_PORT", "587"))
+    username = os.getenv("SMTP_USER")
+    password = os.getenv("SMTP_PASSWORD")
+    sender = os.getenv("SMTP_FROM", username or "noreply@insomnia.market")
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = to_email
+    message["Subject"] = subject
+    message.set_content(body)
+    try:
+        with smtplib.SMTP(host, port, timeout=10) as smtp:
+            if os.getenv("SMTP_TLS", "1") == "1":
+                smtp.starttls()
+            if username and password:
+                smtp.login(username, password)
+            smtp.send_message(message)
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
 
 
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "insomnia-market"}
+
+
+@app.post("/uploads", status_code=201)
+def upload_file(file: UploadFile = File(...), user=Depends(current_user)):
+    allowed = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "audio/wav": ".wav",
+        "audio/mpeg": ".mp3",
+        "audio/flac": ".flac",
+        "audio/x-wav": ".wav",
+    }
+    suffix = allowed.get(file.content_type or "", Path(file.filename or "").suffix.lower())
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".wav", ".mp3", ".flac"}:
+        raise HTTPException(400, "Поддерживаются изображения JPG/PNG/WebP и аудио WAV/MP3/FLAC")
+    name = f"{user['id']}-{secrets.token_urlsafe(12)}{suffix}"
+    target = UPLOAD_DIR / name
+    size = 0
+    with target.open("wb") as out:
+        while chunk := file.file.read(1024 * 1024):
+            size += len(chunk)
+            if size > 80 * 1024 * 1024:
+                target.unlink(missing_ok=True)
+                raise HTTPException(413, "Файл больше 80 МБ")
+            out.write(chunk)
+    return {"url": f"/uploads/{name}", "filename": file.filename, "content_type": file.content_type, "size": size}
+
+
+@app.get("/me")
+def me(user=Depends(current_user)):
+    safe = dict(user)
+    safe.pop("password", None)
+    return safe
+
+
+@app.patch("/me")
+def update_profile(body: ProfileBody, user=Depends(current_user)):
+    with db() as con:
+        con.execute("UPDATE users SET artist_name=?,bio=? WHERE id=?", (body.artist_name, body.bio, user["id"]))
+        updated = con.execute("SELECT id,email,artist_name,role,active,avatar_url,bio,created_at FROM users WHERE id=?", (user["id"],)).fetchone()
+    return row_dict(updated)
+
+
+@app.post("/me/avatar", status_code=201)
+def upload_avatar(file: UploadFile = File(...), user=Depends(current_user)):
+    result = upload_file(file, user)
+    with db() as con:
+        con.execute("UPDATE users SET avatar_url=? WHERE id=?", (result["url"], user["id"]))
+    return result
 
 
 @app.post("/auth/register", status_code=201)
@@ -255,18 +420,23 @@ def list_releases(user=Depends(current_user)):
             rows = con.execute("SELECT * FROM releases WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
         else:
             rows = con.execute("SELECT releases.*, users.artist_name FROM releases JOIN users ON users.id=releases.user_id ORDER BY releases.id DESC").fetchall()
-    return [row_dict(x) for x in rows]
+    return [release_dict(x) for x in rows]
 
 
 @app.post("/releases", status_code=201)
 def create_release(body: ReleaseBody, user=Depends(current_user)):
     with db() as con:
-        cur = con.execute("""INSERT INTO releases(user_id,title,release_type,genre,language,release_date,cover_url,status,created_at,updated_at)
-                           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        cur = con.execute("""INSERT INTO releases(user_id,title,release_type,genre,language,release_date,cover_url,audio_url,lyrics,contributors,platforms,comment,status,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (user["id"], body.title, body.release_type, body.genre, body.language, body.release_date,
-                           body.cover_url, "На модерации", now(), now()))
+                           body.cover_url, body.audio_url, body.lyrics, body.contributors,
+                           json.dumps(body.platforms, ensure_ascii=False), body.comment,
+                           "На модерации", now(), now()))
         release = con.execute("SELECT * FROM releases WHERE id=?", (cur.lastrowid,)).fetchone()
-    return row_dict(release)
+        staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin','moderator') AND active=1").fetchall()
+        for staff_row in staff_rows:
+            notify(con, staff_row["id"], "Новый релиз на модерации", f"{user['artist_name']} отправил релиз «{body.title}».")
+    return release_dict(release)
 
 
 @app.patch("/admin/releases/{release_id}/moderation")
@@ -363,6 +533,18 @@ def tickets(user=Depends(current_user)):
     return [row_dict(x) for x in rows]
 
 
+@app.post("/support/tickets", status_code=201)
+def create_ticket(body: TicketBody, user=Depends(current_user)):
+    with db() as con:
+        cur = con.execute("INSERT INTO tickets(user_id,subject,created_at) VALUES(?,?,?)",
+                          (user["id"], body.subject, now()))
+        staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin','support') AND active=1").fetchall()
+        for staff_row in staff_rows:
+            notify(con, staff_row["id"], "Новый чат поддержки", f"{user['artist_name']} открыл диалог: {body.subject}")
+        ticket = con.execute("SELECT * FROM tickets WHERE id=?", (cur.lastrowid,)).fetchone()
+    return row_dict(ticket)
+
+
 @app.get("/support/tickets/{ticket_id}/messages")
 def ticket_messages(ticket_id: int, user=Depends(current_user)):
     with db() as con:
@@ -380,7 +562,78 @@ def send_message(ticket_id: int, body: MessageBody, user=Depends(current_user)):
             raise HTTPException(403, "Нет доступа")
         cur = con.execute("INSERT INTO messages(ticket_id,sender_id,text,created_at) VALUES(?,?,?,?)",
                           (ticket_id, user["id"], body.text, now()))
-    return {"id": cur.lastrowid, "text": body.text, "created_at": now()}
+    return {"id": cur.lastrowid, "ticket_id": ticket_id, "sender_id": user["id"], "text": body.text, "created_at": now()}
+
+
+@app.post("/promo/requests", status_code=201)
+def create_promo_request(body: PromoRequestBody, user=Depends(current_user)):
+    with db() as con:
+        if body.release_id:
+            release = con.execute("SELECT * FROM releases WHERE id=? AND user_id=?", (body.release_id, user["id"])).fetchone()
+            if not release:
+                raise HTTPException(404, "Релиз не найден")
+        cur = con.execute("""INSERT INTO promo_requests(user_id,release_id,release_info,focus_track,artist_info,status,created_at)
+                          VALUES(?,?,?,?,?,?,?)""",
+                          (user["id"], body.release_id, body.release_info, body.focus_track, body.artist_info, "Новая", now()))
+        staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin','support') AND active=1").fetchall()
+        for staff_row in staff_rows:
+            notify(con, staff_row["id"], "Новая заявка на промо", f"{user['artist_name']} отправил заявку на питчинг.")
+    return {"id": cur.lastrowid, "status": "Новая"}
+
+
+@app.get("/promo/requests")
+def list_promo_requests(user=Depends(current_user)):
+    with db() as con:
+        if user["role"] == "artist":
+            rows = con.execute("SELECT * FROM promo_requests WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
+        else:
+            rows = con.execute("""SELECT promo_requests.*,users.artist_name
+                               FROM promo_requests JOIN users ON users.id=promo_requests.user_id
+                               ORDER BY promo_requests.id DESC""").fetchall()
+    return [row_dict(x) for x in rows]
+
+
+@app.get("/smart-links")
+def list_smart_links(user=Depends(current_user)):
+    with db() as con:
+        rows = con.execute("SELECT * FROM smart_links WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
+    result = []
+    for row in rows:
+        item = row_dict(row)
+        item["links"] = json.loads(item["links"])
+        item["url"] = f"/p/{item['slug']}"
+        result.append(item)
+    return result
+
+
+@app.post("/smart-links", status_code=201)
+def create_smart_link(body: SmartLinkBody, user=Depends(current_user)):
+    base = slugify(body.title)
+    slug = base
+    with db() as con:
+        counter = 2
+        while con.execute("SELECT 1 FROM smart_links WHERE slug=?", (slug,)).fetchone():
+            slug = f"{base}-{counter}"
+            counter += 1
+        cur = con.execute("""INSERT INTO smart_links(user_id,release_id,title,slug,links,created_at)
+                          VALUES(?,?,?,?,?,?)""",
+                          (user["id"], body.release_id, body.title, slug, json.dumps(body.links, ensure_ascii=False), now()))
+    return {"id": cur.lastrowid, "title": body.title, "slug": slug, "links": body.links, "url": f"/p/{slug}"}
+
+
+@app.get("/p/{slug}")
+def public_smart_link(slug: str):
+    with db() as con:
+        row = con.execute("""SELECT smart_links.*,users.artist_name,releases.cover_url
+                          FROM smart_links
+                          JOIN users ON users.id=smart_links.user_id
+                          LEFT JOIN releases ON releases.id=smart_links.release_id
+                          WHERE smart_links.slug=?""", (slug,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Линкс не найден")
+    item = row_dict(row)
+    item["links"] = json.loads(item["links"])
+    return item
 
 
 @app.get("/admin/users")
