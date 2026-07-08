@@ -45,8 +45,22 @@ def db():
         connection.close()
 
 
-def password_hash(value: str) -> str:
+def legacy_password_hash(value: str) -> str:
     return hashlib.sha256(("insomnia-market:" + value).encode()).hexdigest()
+
+
+def password_hash(value: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", value.encode(), salt.encode(), 210_000).hex()
+    return f"pbkdf2_sha256${salt}${digest}"
+
+
+def verify_password(value: str, stored: str) -> bool:
+    if stored.startswith("pbkdf2_sha256$"):
+        _, salt, digest = stored.split("$", 2)
+        check = hashlib.pbkdf2_hmac("sha256", value.encode(), salt.encode(), 210_000).hex()
+        return secrets.compare_digest(check, digest)
+    return secrets.compare_digest(legacy_password_hash(value), stored)
 
 
 def now() -> str:
@@ -409,14 +423,21 @@ def register(body: RegisterBody):
 @app.post("/auth/login")
 def login(body: LoginBody):
     with db() as con:
-        user = con.execute("SELECT * FROM users WHERE email=? AND password=? AND active=1",
-                           (body.email.lower(), password_hash(body.password))).fetchone()
-        if not user:
+        user = con.execute("SELECT * FROM users WHERE email=? AND active=1", (body.email.lower(),)).fetchone()
+        if not user or not verify_password(body.password, user["password"]):
             raise HTTPException(401, "Неверная почта или пароль")
         token = secrets.token_urlsafe(32)
         con.execute("INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)", (token, user["id"], now()))
     safe = row_dict(user); safe.pop("password")
     return {"token": token, "user": safe}
+
+
+@app.delete("/auth/logout")
+def logout(user=Depends(current_user), authorization: str | None = Header(default=None)):
+    token = authorization.removeprefix("Bearer ") if authorization else ""
+    with db() as con:
+        con.execute("DELETE FROM sessions WHERE token=?", (token,))
+    return {"ok": True}
 
 
 @app.get("/releases")
@@ -697,6 +718,13 @@ def notifications(user=Depends(current_user)):
     with db() as con:
         rows = con.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 30", (user["id"],)).fetchall()
     return [row_dict(x) for x in rows]
+
+
+@app.patch("/notifications/read-all")
+def read_notifications(user=Depends(current_user)):
+    with db() as con:
+        con.execute("UPDATE notifications SET read=1 WHERE user_id=?", (user["id"],))
+    return {"ok": True}
 
 
 @app.get("/news")
