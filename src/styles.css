@@ -60,3 +60,4 @@ html[data-theme="dark"] .detail-list span{border-color:#302d3b}
 .smart-form{margin-bottom:18px}.link-actions{display:flex;gap:8px;flex-wrap:wrap}.danger-btn{color:#bf5b5b!important}.danger-btn svg{width:14px}
 .admin-detail{max-width:1180px}.release-data.vertical{display:flex;flex-direction:column}.admin-form{margin-bottom:18px}
 .ticket{border:0;background:transparent;text-align:left;width:100%}.close-ticket{width:auto!important;padding:9px 12px}.send:disabled{opacity:.45;cursor:not-allowed}
+.news-detail-card{min-height:420px}.news-detail-card p{font-size:13px;max-width:760px}
