@@ -118,6 +118,15 @@ function Login({onLogin,theme,onToggleTheme}){
   </div>
 }
 
+function PublicSmartLink(){
+ const slug=decodeURIComponent(location.pathname.split('/p/')[1]||'').replace(/\/$/,'');
+ const [item,setItem]=useState(null);
+ const [error,setError]=useState('');
+ useEffect(()=>{if(!slug)return;api(`/p/${slug}`).then(setItem).catch(e=>setError(e.message))},[slug]);
+ const links=item?.links||{};
+ return <div className="public-link-page"><div className="public-card"><Logo/><div className="public-cover">{item?.cover_url?<img src={apiFileUrl(item.cover_url)} alt={item.title}/>:<Sparkles/>}</div>{error?<><h1>Линкс не найден</h1><p>{error}</p></>:<><span className="eyebrow">INSOMNIA SMART LINK</span><h1>{item?.title||'Загрузка...'}</h1><p>{item?.artist_name||'Insomnia Market'}</p><div className="public-buttons">{Object.entries(links).map(([name,url])=><a key={name} href={url} target="_blank" rel="noreferrer">{name}<ArrowRight/></a>)}</div></>}</div></div>
+}
+
 function Sidebar({page,setPage,open,setOpen,onLogout,currentUser}){
   const isStaff=currentUser.role!=='artist';
   const nav=isStaff?staffNav:artistNav;
@@ -250,6 +259,7 @@ function AdminTeam({admins,onAddAdmin,onRemoveAdmin}){
 }
 
 function App(){
+ if(location.pathname.includes('/p/'))return <PublicSmartLink/>;
  const [logged,setLogged]=useState(()=>!!localStorage.getItem('im_token'));
  const [currentUser,setCurrentUser]=useState(()=>JSON.parse(localStorage.getItem('im_user')||'{"id":1,"artist":"Luna Ray","role":"artist"}'));
  const [page,setPage]=useState(()=>currentUser.role==='artist'?'Главная':'Админка');const [menu,setMenu]=useState(false);const [releases,setReleases]=useState(demoReleases);

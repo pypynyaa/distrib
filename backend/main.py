@@ -277,6 +277,12 @@ class SmartLinkBody(BaseModel):
     links: dict[str, str] = Field(default_factory=dict)
 
 
+class NewsBody(BaseModel):
+    category: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=2, max_length=220)
+    body: str = Field(min_length=2, max_length=10000)
+
+
 def current_user(authorization: str | None = Header(default=None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Требуется авторизация")
@@ -691,3 +697,39 @@ def notifications(user=Depends(current_user)):
     with db() as con:
         rows = con.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 30", (user["id"],)).fetchall()
     return [row_dict(x) for x in rows]
+
+
+@app.get("/news")
+def list_news():
+    with db() as con:
+        rows = con.execute("SELECT * FROM news ORDER BY id DESC").fetchall()
+    return [row_dict(x) for x in rows]
+
+
+@app.post("/admin/news", status_code=201)
+def create_news(body: NewsBody, staff=Depends(require_staff)):
+    with db() as con:
+        cur = con.execute("INSERT INTO news(category,title,body,published_at) VALUES(?,?,?,?)",
+                          (body.category, body.title, body.body, now()))
+        row = con.execute("SELECT * FROM news WHERE id=?", (cur.lastrowid,)).fetchone()
+    return row_dict(row)
+
+
+@app.patch("/admin/news/{news_id}")
+def update_news(news_id: int, body: NewsBody, staff=Depends(require_staff)):
+    with db() as con:
+        result = con.execute("UPDATE news SET category=?,title=?,body=? WHERE id=?",
+                             (body.category, body.title, body.body, news_id))
+        if not result.rowcount:
+            raise HTTPException(404, "Новость не найдена")
+        row = con.execute("SELECT * FROM news WHERE id=?", (news_id,)).fetchone()
+    return row_dict(row)
+
+
+@app.delete("/admin/news/{news_id}")
+def delete_news(news_id: int, staff=Depends(require_staff)):
+    with db() as con:
+        result = con.execute("DELETE FROM news WHERE id=?", (news_id,))
+        if not result.rowcount:
+            raise HTTPException(404, "Новость не найдена")
+    return {"ok": True}
