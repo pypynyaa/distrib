@@ -65,11 +65,17 @@ def initialize():
       id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL,
       release_type TEXT NOT NULL, genre TEXT, language TEXT, release_date TEXT,
       cover_url TEXT, status TEXT NOT NULL DEFAULT 'На модерации', rejection_reason TEXT,
+      upc TEXT, isrc TEXT,
       streams INTEGER DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS finance (
       id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), period TEXT NOT NULL,
       source TEXT NOT NULL, amount REAL NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS payout_requests (
+      id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), amount REAL NOT NULL,
+      card_number TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Ожидает выплаты',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS news (
       id INTEGER PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
@@ -90,6 +96,11 @@ def initialize():
     """
     with db() as con:
         con.executescript(schema)
+        release_columns = {row["name"] for row in con.execute("PRAGMA table_info(releases)").fetchall()}
+        if "upc" not in release_columns:
+            con.execute("ALTER TABLE releases ADD COLUMN upc TEXT")
+        if "isrc" not in release_columns:
+            con.execute("ALTER TABLE releases ADD COLUMN isrc TEXT")
         if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             con.execute("INSERT INTO users(email,password,artist_name,role,created_at) VALUES(?,?,?,?,?)",
                         ("artist@insomnia.market", password_hash("insomnia"), "Luna Ray", "artist", now()))
@@ -145,12 +156,26 @@ class StatsBody(BaseModel):
     streams: int = Field(ge=0)
 
 
+class ReleaseCodesBody(BaseModel):
+    upc: str | None = None
+    isrc: str | None = None
+
+
 class FinanceBody(BaseModel):
     user_id: int
     period: str
     source: str = "Все площадки"
     amount: float
     status: str = "Начислено"
+
+
+class PayoutBody(BaseModel):
+    amount: float = Field(gt=0)
+    card_number: str = Field(min_length=12, max_length=32)
+
+
+class PayoutStatusBody(BaseModel):
+    status: Literal["Ожидает выплаты", "Оплачено", "Отклонено"]
 
 
 class MessageBody(BaseModel):
@@ -162,6 +187,10 @@ class AdminBody(BaseModel):
     password: str = Field(min_length=6)
     name: str
     role: Literal["admin", "moderator", "support"] = "admin"
+
+
+class AccountStatusBody(BaseModel):
+    active: bool
 
 
 def current_user(authorization: str | None = Header(default=None)):
@@ -265,11 +294,34 @@ def update_stats(release_id: int, body: StatsBody, staff=Depends(require_staff))
     return {"ok": True, "streams": body.streams}
 
 
+@app.patch("/admin/releases/{release_id}/codes")
+def update_release_codes(release_id: int, body: ReleaseCodesBody, staff=Depends(require_staff)):
+    with db() as con:
+        result = con.execute("UPDATE releases SET upc=?,isrc=?,updated_at=? WHERE id=?",
+                             (body.upc, body.isrc, now(), release_id))
+        if not result.rowcount:
+            raise HTTPException(404, "Релиз не найден")
+    return {"ok": True, "upc": body.upc, "isrc": body.isrc}
+
+
 @app.get("/finance")
 def get_finance(user=Depends(current_user)):
     with db() as con:
         rows = con.execute("SELECT * FROM finance WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
-    return {"balance": sum(x["amount"] for x in rows if x["status"] == "Начислено"), "history": [row_dict(x) for x in rows]}
+        payouts = con.execute("SELECT * FROM payout_requests WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
+    return {"balance": sum(x["amount"] for x in rows if x["status"] == "Начислено"), "history": [row_dict(x) for x in rows], "payouts": [row_dict(x) for x in payouts]}
+
+
+@app.post("/finance/payouts", status_code=201)
+def request_payout(body: PayoutBody, user=Depends(current_user)):
+    with db() as con:
+        cur = con.execute("""INSERT INTO payout_requests(user_id,amount,card_number,status,created_at,updated_at)
+                          VALUES(?,?,?,?,?,?)""",
+                          (user["id"], body.amount, body.card_number, "Ожидает выплаты", now(), now()))
+        staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin') AND active=1").fetchall()
+        for staff_row in staff_rows:
+            notify(con, staff_row["id"], "Новая заявка на выплату", f"{user['artist_name']} запросил выплату {body.amount:.2f} ₽")
+    return {"id": cur.lastrowid, "status": "Ожидает выплаты"}
 
 
 @app.post("/admin/finance", status_code=201)
@@ -279,6 +331,26 @@ def add_finance(body: FinanceBody, staff=Depends(require_staff)):
                           (body.user_id, body.period, body.source, body.amount, body.status, now()))
         notify(con, body.user_id, "Новое начисление", f"За период {body.period} начислено {body.amount:.2f} ₽")
     return {"id": cur.lastrowid, "ok": True}
+
+
+@app.get("/admin/payouts")
+def admin_payouts(staff=Depends(require_staff)):
+    with db() as con:
+        rows = con.execute("""SELECT payout_requests.*,users.artist_name,users.email
+                           FROM payout_requests JOIN users ON users.id=payout_requests.user_id
+                           ORDER BY payout_requests.id DESC""").fetchall()
+    return [row_dict(x) for x in rows]
+
+
+@app.patch("/admin/payouts/{payout_id}")
+def update_payout(payout_id: int, body: PayoutStatusBody, staff=Depends(require_staff)):
+    with db() as con:
+        payout = con.execute("SELECT * FROM payout_requests WHERE id=?", (payout_id,)).fetchone()
+        if not payout:
+            raise HTTPException(404, "Заявка не найдена")
+        con.execute("UPDATE payout_requests SET status=?,updated_at=? WHERE id=?", (body.status, now(), payout_id))
+        notify(con, payout["user_id"], "Статус выплаты обновлён", f"Ваша заявка на выплату: {body.status}")
+    return {"ok": True, "status": body.status}
 
 
 @app.get("/support/tickets")
@@ -318,6 +390,23 @@ def admins(staff=Depends(require_staff)):
     return [row_dict(x) for x in rows]
 
 
+@app.get("/admin/accounts")
+def accounts(staff=Depends(require_staff)):
+    with db() as con:
+        rows = con.execute("""SELECT id,email,artist_name,role,active,created_at
+                           FROM users WHERE role='artist' ORDER BY id DESC""").fetchall()
+    return [row_dict(x) for x in rows]
+
+
+@app.patch("/admin/accounts/{user_id}")
+def update_account_status(user_id: int, body: AccountStatusBody, staff=Depends(require_staff)):
+    with db() as con:
+        result = con.execute("UPDATE users SET active=? WHERE id=? AND role='artist'", (1 if body.active else 0, user_id))
+        if not result.rowcount:
+            raise HTTPException(404, "Кабинет не найден")
+    return {"ok": True, "active": body.active}
+
+
 @app.post("/admin/users", status_code=201)
 def add_admin(body: AdminBody, staff=Depends(require_staff)):
     if staff["role"] != "owner":
@@ -349,4 +438,3 @@ def notifications(user=Depends(current_user)):
     with db() as con:
         rows = con.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 30", (user["id"],)).fetchall()
     return [row_dict(x) for x in rows]
-
