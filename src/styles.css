@@ -75,3 +75,38 @@ html[data-theme="dark"] .notify-item{border-color:#302d3b;color:#f3eff8}html[dat
 .payout-actions input{width:180px;min-height:34px;margin:0;padding:8px 10px;font-size:9px}.payout-actions{align-items:center}
 .accounts-table .online input{width:150px;min-height:30px;margin:0 8px 0 0;padding:7px 9px;font-size:8px}.accounts-table .admin-name{align-items:flex-start;flex-direction:column;gap:3px;position:relative}.accounts-table .admin-name i{position:absolute;left:0;top:0}.accounts-table .admin-name b,.accounts-table .admin-name small{margin-left:42px}.accounts-table .admin-name small{font-size:8px;color:var(--muted);line-height:1.4}
 @media(max-width:760px){.social-grid{grid-template-columns:1fr}.detail-actions{flex-direction:column}.detail-actions .secondary,.detail-actions .primary{width:100%}}
+
+.single-support{display:block;padding:28px;max-width:980px;height:calc(100vh - 82px);background:transparent}
+.single-support .chat{height:100%;min-height:560px;background:#fff;border:1px solid var(--line);border-radius:22px;overflow:hidden}
+.single-support .composer input{min-height:46px;font-size:12px}
+.single-support .send{width:48px;min-width:48px}
+.admin-audio-box{border:1px solid var(--line);background:#faf9fd;border-radius:15px;padding:13px;display:grid;gap:10px}
+.admin-audio-box>b{font-size:10px;color:#302b3d}
+.compact-track{padding:10px;border-radius:12px;background:white}
+.compact-track small{font-size:10px;margin:0 0 6px}
+.admin-filters .field-row{align-items:end}
+.admin-table.accounts-table{overflow:hidden}
+.accounts-table .tr{grid-template-columns:minmax(210px,1.2fr) minmax(190px,1fr) minmax(130px,.7fr) minmax(260px,1.35fr);gap:16px;align-items:start}
+.accounts-table .online,.accounts-table .danger{display:flex;align-items:center;gap:10px;flex-wrap:wrap;line-height:1.4}
+.accounts-table .online input{flex:1 1 190px;width:auto;min-height:38px;font-size:10px;margin:0}
+.accounts-table .online button,.accounts-table .danger button{float:none;margin-left:0;min-height:36px;border-radius:10px;background:#fff1f1;padding:8px 10px;font-size:10px;font-weight:800}
+.accounts-table .danger button{background:#f1eff7}
+.admin-table .tr{min-width:0}
+.admin-table .tr>span{min-width:0;word-break:break-word}
+.admin-team-form .field-row,.transactions .field-row,.admin-filters .field-row{gap:16px}
+.admin-form input,.admin-form select,.admin-form textarea,.transactions input,.transactions select,.admin-filters input,.admin-filters select{font-size:12px;min-height:44px}
+.admin-form textarea{min-height:150px}
+.primary,.secondary,.white-btn{font-size:12px;border-radius:13px;min-height:44px;padding:12px 18px}
+.tabs button{font-size:11px;min-height:40px}
+.search{min-width:120px}
+.search.active input{font-size:12px}
+.mini-row.finance-request{grid-template-columns:minmax(220px,1fr) auto auto minmax(280px,auto)}
+.payout-actions input{width:220px;min-height:38px;font-size:10px}
+.news-grid{align-items:stretch}
+.news-card p{white-space:pre-wrap}
+html[data-theme="dark"] .single-support .chat,html[data-theme="dark"] .compact-track{background:#17151e;border-color:#302d3b}
+html[data-theme="dark"] .admin-audio-box{background:#14121a;border-color:#342f42}
+html[data-theme="dark"] .admin-audio-box>b{color:#eeeaf5}
+html[data-theme="dark"] .accounts-table .online button{background:#322129;color:#efa1a1}
+html[data-theme="dark"] .accounts-table .danger button{background:#292532}
+@media(max-width:1050px){.accounts-table .tr,.admin-table .tr{grid-template-columns:1fr}.accounts-table .tr.th,.admin-table .tr.th{display:none}.mini-row.finance-request{grid-template-columns:1fr}.single-support{padding:16px;height:auto}.single-support .chat{min-height:620px}}

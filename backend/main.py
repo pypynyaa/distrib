@@ -200,22 +200,6 @@ def initialize():
                         ("artist@insomnia.market", password_hash("insomnia"), "Luna Ray", "artist", now()))
             con.execute("INSERT INTO users(email,password,artist_name,role,created_at) VALUES(?,?,?,?,?)",
                         ("owner@insomnia.market", password_hash("admin"), "Алексей Ковалёв", "owner", now()))
-            artist = con.execute("SELECT id FROM users WHERE role='artist'").fetchone()[0]
-            releases = [
-                (artist, "Neon Dreams", "Сингл", "Pop", "Русский", "2026-07-10", "На модерации", None, 0),
-                (artist, "Midnight Echoes", "EP · 5 треков", "Electronic", "Английский", "2026-06-10", "Принят", None, 128440),
-                (artist, "Cold Summer", "Сингл", "Pop", "Русский", "2026-06-02", "Черновик", "Обложка содержит мелкий текст. Загрузите версию без надписей.", 0),
-            ]
-            for item in releases:
-                con.execute("""INSERT INTO releases(user_id,title,release_type,genre,language,release_date,status,rejection_reason,streams,created_at,updated_at)
-                             VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (*item, now(), now()))
-            con.execute("INSERT INTO finance(user_id,period,source,amount,status,updated_at) VALUES(?,?,?,?,?,?)",
-                        (artist, "Май 2026", "Все площадки", 32840, "Начислено", now()))
-            con.execute("INSERT INTO tickets(user_id,subject,created_at) VALUES(?,?,?)", (artist, "Мой релиз", now()))
-            ticket = con.execute("SELECT id FROM tickets LIMIT 1").fetchone()[0]
-            admin = con.execute("SELECT id FROM users WHERE role='owner'").fetchone()[0]
-            con.execute("INSERT INTO messages(ticket_id,sender_id,text,created_at) VALUES(?,?,?,?)",
-                        (ticket, admin, "Привет, Luna! Я из команды поддержки. Чем могу помочь?", now()))
 
 
 initialize()
@@ -304,9 +288,10 @@ class ProfileBody(BaseModel):
 
 
 class AdminBody(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=6)
-    name: str
+    user_id: int | None = None
+    email: EmailStr | None = None
+    password: str | None = Field(default=None, min_length=6)
+    name: str | None = None
     role: Literal["admin", "moderator", "support", "finance"] = "admin"
 
 
@@ -657,7 +642,7 @@ def update_payout(payout_id: int, body: PayoutStatusBody, staff=Depends(require_
 def tickets(user=Depends(current_user)):
     with db() as con:
         if user["role"] == "artist":
-            rows = con.execute("SELECT * FROM tickets WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
+            rows = con.execute("SELECT * FROM tickets WHERE user_id=? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchall()
         else:
             rows = con.execute("SELECT tickets.*,users.artist_name FROM tickets JOIN users ON users.id=tickets.user_id ORDER BY tickets.id DESC").fetchall()
     return [row_dict(x) for x in rows]
@@ -666,6 +651,13 @@ def tickets(user=Depends(current_user)):
 @app.post("/support/tickets", status_code=201)
 def create_ticket(body: TicketBody, user=Depends(current_user)):
     with db() as con:
+        if user["role"] == "artist":
+            existing = con.execute("SELECT * FROM tickets WHERE user_id=? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
+            if existing:
+                if existing["status"] == "Закрыт":
+                    con.execute("UPDATE tickets SET status=? WHERE id=?", ("Открыт", existing["id"]))
+                    existing = con.execute("SELECT * FROM tickets WHERE id=?", (existing["id"],)).fetchone()
+                return row_dict(existing)
         cur = con.execute("INSERT INTO tickets(user_id,subject,created_at) VALUES(?,?,?)",
                           (user["id"], body.subject, now()))
         staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin','support') AND active=1").fetchall()
@@ -913,6 +905,17 @@ def add_admin(body: AdminBody, staff=Depends(require_staff)):
     if staff["role"] != "owner":
         raise HTTPException(403, "Только владелец может добавлять администраторов")
     with db() as con:
+        if body.user_id:
+            user_row = con.execute("SELECT id,artist_name,role FROM users WHERE id=? AND role!='owner'", (body.user_id,)).fetchone()
+            if not user_row:
+                raise HTTPException(404, "Пользователь не найден")
+            con.execute("UPDATE users SET role=?,active=1 WHERE id=?", (body.role, body.user_id))
+            con.execute("""INSERT INTO audit_logs(actor_id,target_user_id,action,details,created_at)
+                        VALUES(?,?,?,?,?)""", (staff["id"], body.user_id, "admin_role_assigned", body.role, now()))
+            notify(con, body.user_id, "Назначена роль в команде", f"Вам назначена роль: {body.role}")
+            return {"id": body.user_id, "ok": True}
+        if not body.email or not body.password or not body.name:
+            raise HTTPException(400, "Выберите пользователя или заполните имя, email и пароль")
         try:
             cur = con.execute("INSERT INTO users(email,password,artist_name,role,created_at) VALUES(?,?,?,?,?)",
                               (body.email.lower(), password_hash(body.password), body.name, body.role, now()))
