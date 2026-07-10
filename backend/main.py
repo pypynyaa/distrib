@@ -565,12 +565,27 @@ def get_finance(user=Depends(current_user)):
     with db() as con:
         rows = con.execute("SELECT * FROM finance WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
         payouts = con.execute("SELECT * FROM payout_requests WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
-    return {"balance": sum(x["amount"] for x in rows if x["status"] == "Начислено"), "history": [row_dict(x) for x in rows], "payouts": [row_dict(x) for x in payouts]}
+    accrued = sum(x["amount"] for x in rows if x["status"] == "Начислено")
+    paid = sum(x["amount"] for x in payouts if x["status"] == "Оплачено")
+    pending = sum(x["amount"] for x in payouts if x["status"] == "Ожидает выплаты")
+    return {
+        "balance": max(accrued - paid - pending, 0),
+        "accrued": accrued,
+        "paid": paid,
+        "pending": pending,
+        "history": [row_dict(x) for x in rows],
+        "payouts": [row_dict(x) for x in payouts],
+    }
 
 
 @app.post("/finance/payouts", status_code=201)
 def request_payout(body: PayoutBody, user=Depends(current_user)):
     with db() as con:
+        accrued_row = con.execute("SELECT COALESCE(SUM(amount),0) AS total FROM finance WHERE user_id=? AND status='Начислено'", (user["id"],)).fetchone()
+        used_row = con.execute("SELECT COALESCE(SUM(amount),0) AS total FROM payout_requests WHERE user_id=? AND status IN ('Ожидает выплаты','Оплачено')", (user["id"],)).fetchone()
+        available = float(accrued_row["total"] or 0) - float(used_row["total"] or 0)
+        if body.amount > available:
+            raise HTTPException(400, "Сумма больше доступного баланса")
         cur = con.execute("""INSERT INTO payout_requests(user_id,amount,card_number,status,created_at,updated_at)
                           VALUES(?,?,?,?,?,?)""",
                           (user["id"], body.amount, body.card_number, "Ожидает выплаты", now(), now()))
@@ -785,8 +800,17 @@ def admins(staff=Depends(require_staff)):
 @app.get("/admin/accounts")
 def accounts(staff=Depends(require_staff)):
     with db() as con:
-        rows = con.execute("""SELECT id,email,artist_name,role,active,created_at
-                           FROM users WHERE role='artist' ORDER BY id DESC""").fetchall()
+        rows = con.execute("""SELECT users.id,users.email,users.artist_name,users.role,users.active,users.created_at,
+                           COALESCE(finance_totals.balance,0) AS balance,
+                           COALESCE(payout_totals.paid,0) AS paid
+                           FROM users
+                           LEFT JOIN (
+                             SELECT user_id,SUM(amount) AS balance FROM finance WHERE status='Начислено' GROUP BY user_id
+                           ) finance_totals ON finance_totals.user_id=users.id
+                           LEFT JOIN (
+                             SELECT user_id,SUM(amount) AS paid FROM payout_requests WHERE status='Оплачено' GROUP BY user_id
+                           ) payout_totals ON payout_totals.user_id=users.id
+                           WHERE users.role='artist' ORDER BY users.id DESC""").fetchall()
     return [row_dict(x) for x in rows]
 
 
