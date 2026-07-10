@@ -505,6 +505,26 @@ def create_release(body: ReleaseBody, user=Depends(current_user)):
     return release_dict(release)
 
 
+@app.patch("/releases/{release_id}")
+def update_own_release(release_id: int, body: ReleaseBody, user=Depends(current_user)):
+    with db() as con:
+        release = con.execute("SELECT * FROM releases WHERE id=? AND user_id=?", (release_id, user["id"])).fetchone()
+        if not release:
+            raise HTTPException(404, "Релиз не найден")
+        if release["status"] != "Черновик":
+            raise HTTPException(400, "Редактировать можно только релиз в черновике")
+        con.execute("""UPDATE releases SET title=?,release_type=?,genre=?,language=?,release_date=?,cover_url=?,audio_url=?,lyrics=?,contributors=?,platforms=?,comment=?,status=?,rejection_reason=?,updated_at=?
+                    WHERE id=? AND user_id=?""",
+                    (body.title, body.release_type, body.genre, body.language, body.release_date, body.cover_url, body.audio_url,
+                     body.lyrics, body.contributors, json.dumps(body.platforms, ensure_ascii=False), body.comment,
+                     "На модерации", None, now(), release_id, user["id"]))
+        updated = con.execute("SELECT * FROM releases WHERE id=?", (release_id,)).fetchone()
+        staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin','moderator') AND active=1").fetchall()
+        for staff_row in staff_rows:
+            notify(con, staff_row["id"], "Релиз повторно отправлен", f"{user['artist_name']} отправил исправленный релиз «{body.title}».")
+    return release_dict(updated)
+
+
 @app.patch("/admin/releases/{release_id}/moderation")
 def moderate_release(release_id: int, body: ModerationBody, staff=Depends(require_staff)):
     if body.status == "Черновик" and not body.reason:
