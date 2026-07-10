@@ -86,7 +86,7 @@ def release_dict(row):
     data = row_dict(row)
     if not data:
         return None
-    for key in ("platforms", "contributors"):
+    for key in ("platforms", "contributors", "tracks"):
         if data.get(key):
             try:
                 data[key] = json.loads(data[key])
@@ -114,7 +114,7 @@ def initialize():
       release_type TEXT NOT NULL, genre TEXT, language TEXT, release_date TEXT,
       cover_url TEXT, status TEXT NOT NULL DEFAULT 'На модерации', rejection_reason TEXT,
       upc TEXT, isrc TEXT,
-      audio_url TEXT, lyrics TEXT, contributors TEXT, platforms TEXT, comment TEXT,
+      audio_url TEXT, lyrics TEXT, contributors TEXT, platforms TEXT, tracks TEXT, comment TEXT,
       streams INTEGER DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS finance (
@@ -176,7 +176,7 @@ def initialize():
             con.execute("ALTER TABLE releases ADD COLUMN upc TEXT")
         if "isrc" not in release_columns:
             con.execute("ALTER TABLE releases ADD COLUMN isrc TEXT")
-        for column in ("audio_url", "lyrics", "contributors", "platforms", "comment"):
+        for column in ("audio_url", "lyrics", "contributors", "platforms", "tracks", "comment"):
             if column not in release_columns:
                 con.execute(f"ALTER TABLE releases ADD COLUMN {column} TEXT")
         notification_columns = {row["name"] for row in con.execute("PRAGMA table_info(notifications)").fetchall()}
@@ -243,6 +243,7 @@ class ReleaseBody(BaseModel):
     lyrics: str | None = None
     contributors: str | None = None
     platforms: list[str] = Field(default_factory=list)
+    tracks: list[dict] = Field(default_factory=list)
     comment: str | None = None
 
 
@@ -258,6 +259,7 @@ class StatsBody(BaseModel):
 class ReleaseCodesBody(BaseModel):
     upc: str | None = None
     isrc: str | None = None
+    tracks: list[dict] | None = None
 
 
 class FinanceBody(BaseModel):
@@ -516,11 +518,12 @@ def list_releases(user=Depends(current_user)):
 @app.post("/releases", status_code=201)
 def create_release(body: ReleaseBody, user=Depends(current_user)):
     with db() as con:
-        cur = con.execute("""INSERT INTO releases(user_id,title,release_type,genre,language,release_date,cover_url,audio_url,lyrics,contributors,platforms,comment,status,created_at,updated_at)
-                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        tracks = body.tracks or [{"title": body.title, "audio_url": body.audio_url, "isrc": ""}]
+        cur = con.execute("""INSERT INTO releases(user_id,title,release_type,genre,language,release_date,cover_url,audio_url,lyrics,contributors,platforms,tracks,comment,status,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (user["id"], body.title, body.release_type, body.genre, body.language, body.release_date,
                            body.cover_url, body.audio_url, body.lyrics, body.contributors,
-                           json.dumps(body.platforms, ensure_ascii=False), body.comment,
+                           json.dumps(body.platforms, ensure_ascii=False), json.dumps(tracks, ensure_ascii=False), body.comment,
                            "На модерации", now(), now()))
         release = con.execute("SELECT * FROM releases WHERE id=?", (cur.lastrowid,)).fetchone()
         staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin','moderator') AND active=1").fetchall()
@@ -537,10 +540,11 @@ def update_own_release(release_id: int, body: ReleaseBody, user=Depends(current_
             raise HTTPException(404, "Релиз не найден")
         if release["status"] != "Черновик":
             raise HTTPException(400, "Редактировать можно только релиз в черновике")
-        con.execute("""UPDATE releases SET title=?,release_type=?,genre=?,language=?,release_date=?,cover_url=?,audio_url=?,lyrics=?,contributors=?,platforms=?,comment=?,status=?,rejection_reason=?,updated_at=?
+        tracks = body.tracks or [{"title": body.title, "audio_url": body.audio_url, "isrc": ""}]
+        con.execute("""UPDATE releases SET title=?,release_type=?,genre=?,language=?,release_date=?,cover_url=?,audio_url=?,lyrics=?,contributors=?,platforms=?,tracks=?,comment=?,status=?,rejection_reason=?,updated_at=?
                     WHERE id=? AND user_id=?""",
                     (body.title, body.release_type, body.genre, body.language, body.release_date, body.cover_url, body.audio_url,
-                     body.lyrics, body.contributors, json.dumps(body.platforms, ensure_ascii=False), body.comment,
+                     body.lyrics, body.contributors, json.dumps(body.platforms, ensure_ascii=False), json.dumps(tracks, ensure_ascii=False), body.comment,
                      "На модерации", None, now(), release_id, user["id"]))
         updated = con.execute("SELECT * FROM releases WHERE id=?", (release_id,)).fetchone()
         staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin','moderator') AND active=1").fetchall()
@@ -577,8 +581,8 @@ def update_stats(release_id: int, body: StatsBody, staff=Depends(require_staff))
 @app.patch("/admin/releases/{release_id}/codes")
 def update_release_codes(release_id: int, body: ReleaseCodesBody, staff=Depends(require_staff)):
     with db() as con:
-        result = con.execute("UPDATE releases SET upc=?,isrc=?,updated_at=? WHERE id=?",
-                             (body.upc, body.isrc, now(), release_id))
+        result = con.execute("UPDATE releases SET upc=?,isrc=?,tracks=COALESCE(?,tracks),updated_at=? WHERE id=?",
+                             (body.upc, body.isrc, json.dumps(body.tracks, ensure_ascii=False) if body.tracks is not None else None, now(), release_id))
         if not result.rowcount:
             raise HTTPException(404, "Релиз не найден")
     return {"ok": True, "upc": body.upc, "isrc": body.isrc}
