@@ -150,3 +150,34 @@ html[data-theme="dark"] .accounts-table .danger button{background:#292532}
   .form-actions button,.admin-actions button,.detail-actions button,.inline-actions button{width:100%}
   .news-card{padding:22px;min-height:300px}
 }
+
+body{font-size:15px}
+aside{padding:30px 20px 22px}
+aside nav button,.logout{font-size:15px;padding:14px 15px;border-radius:14px}
+aside nav button i{width:22px;height:22px;font-size:12px}
+.promo-mini b{font-size:15px}.promo-mini p,.promo-mini button{font-size:12px}
+.user-mini{padding:21px 8px 10px;border-radius:14px}.user-mini:hover{background:#ffffff0b}
+.user-mini>span,.avatar{width:40px;height:40px;font-size:13px}
+.user-mini b{font-size:14px}.user-mini small{font-size:12px}
+header h2{font-size:21px}header>div:first-of-type span{font-size:10px}
+.page-title h1{font-size:34px}.page-title p{font-size:14px;line-height:1.55}
+.hello h1,.promo-hero h1{font-size:44px}.hello p,.promo-hero p{font-size:15px}
+.eyebrow{font-size:11px}.panel{padding:26px;border-radius:22px}.panel-head h3{font-size:18px}.panel-head button{font-size:13px}
+label{font-size:12px;margin-bottom:17px}input,select,textarea{font-size:14px;min-height:48px;border-radius:13px;padding:14px 15px}
+textarea{min-height:140px}.primary,.secondary,.white-btn{font-size:14px;min-height:50px;padding:14px 21px;border-radius:15px}
+.tabs button{font-size:13px;min-height:46px;padding:11px 16px}
+.badge{font-size:11px;padding:8px 10px;border-radius:10px}
+.metric{padding:22px}.metric>span{font-size:13px}.metric>b{font-size:28px}.metric>small{font-size:12px}.metric-icon{width:42px;height:42px}
+.release-name b,.stream b{font-size:14px}.release-name span,.stream span{font-size:11px}.release-row{grid-template-columns:56px 1.4fr auto .8fr 18px;gap:15px;padding:14px 0}.cover{width:56px;border-radius:12px}
+.release-card-body h3,.admin-release-head h3{font-size:18px}.release-card-body p,.admin-release-head p{font-size:12px}.card-meta,.release-codes span{font-size:11px}
+.admin-comment b,.reject b{font-size:12px}.admin-comment p,.admin-comment small,.payout-box p,.detail-text{font-size:13px}
+.mini-row,.transactions .tr,.admin-table .tr{font-size:13px}.tr.th{font-size:11px}
+.empty-line,.muted,.field-hint{font-size:12px}.empty-state h3{font-size:18px}.empty-state p{font-size:14px}
+.news-card h3{font-size:24px}.news-card p{font-size:13px}.news-card span{font-size:10px}.news-card button{font-size:12px}
+.link-card>div:first-child,.link-url,.link-actions .secondary,.link-actions a.secondary{font-size:13px}.link-meta small,.link-card i{font-size:11px}
+.chat-head{height:82px}.chat-head>span,.ticket>span{width:44px;height:44px;font-size:13px}.chat-head b{font-size:14px}.chat-head small{font-size:12px}
+.support-title h2{font-size:22px}.support-title small{font-size:12px;color:var(--muted)}
+.ticket{padding:15px 12px}.ticket b{font-size:13px}.ticket p{font-size:12px}.ticket small{font-size:10px}
+.message p{font-size:14px;padding:13px 16px}.message small{font-size:11px}.composer{padding:16px 20px}.composer input{font-size:14px;min-height:52px}.send{width:52px;min-width:52px;border-radius:15px}
+.profile-avatar small{font-size:13px}.form-inner h2{font-size:32px}.form-inner>p{font-size:14px}
+@media(max-width:760px){.page-title h1{font-size:29px}.hello h1,.promo-hero h1{font-size:32px}.panel{padding:20px}.primary,.secondary,.white-btn{width:auto}.metrics{grid-template-columns:1fr}.release-row{grid-template-columns:52px 1fr auto}}
