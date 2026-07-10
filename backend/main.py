@@ -123,7 +123,8 @@ def initialize():
     );
     CREATE TABLE IF NOT EXISTS payout_requests (
       id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), amount REAL NOT NULL,
-      card_number TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Ожидает выплаты',
+      card_number TEXT NOT NULL, holder TEXT, bank TEXT, rejection_reason TEXT,
+      status TEXT NOT NULL DEFAULT 'Ожидает выплаты',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS news (
@@ -150,7 +151,8 @@ def initialize():
     );
     CREATE TABLE IF NOT EXISTS smart_links (
       id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), release_id INTEGER REFERENCES releases(id),
-      title TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, links TEXT NOT NULL, created_at TEXT NOT NULL
+      title TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, links TEXT NOT NULL, active INTEGER DEFAULT 1,
+      clicks INTEGER DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT
     );
     """
     with db() as con:
@@ -176,6 +178,17 @@ def initialize():
             con.execute("ALTER TABLE notifications ADD COLUMN sent INTEGER DEFAULT 0")
         if "error" not in notification_columns:
             con.execute("ALTER TABLE notifications ADD COLUMN error TEXT")
+        smart_columns = {row["name"] for row in con.execute("PRAGMA table_info(smart_links)").fetchall()}
+        if "active" not in smart_columns:
+            con.execute("ALTER TABLE smart_links ADD COLUMN active INTEGER DEFAULT 1")
+        if "clicks" not in smart_columns:
+            con.execute("ALTER TABLE smart_links ADD COLUMN clicks INTEGER DEFAULT 0")
+        if "updated_at" not in smart_columns:
+            con.execute("ALTER TABLE smart_links ADD COLUMN updated_at TEXT")
+        payout_columns = {row["name"] for row in con.execute("PRAGMA table_info(payout_requests)").fetchall()}
+        for column in ("holder", "bank", "rejection_reason"):
+            if column not in payout_columns:
+                con.execute(f"ALTER TABLE payout_requests ADD COLUMN {column} TEXT")
         if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             con.execute("INSERT INTO users(email,password,artist_name,role,created_at) VALUES(?,?,?,?,?)",
                         ("artist@insomnia.market", password_hash("insomnia"), "Luna Ray", "artist", now()))
@@ -252,10 +265,13 @@ class FinanceBody(BaseModel):
 class PayoutBody(BaseModel):
     amount: float = Field(gt=0)
     card_number: str = Field(min_length=12, max_length=32)
+    holder: str | None = Field(default=None, max_length=180)
+    bank: str | None = Field(default=None, max_length=120)
 
 
 class PayoutStatusBody(BaseModel):
     status: Literal["Ожидает выплаты", "Оплачено", "Отклонено"]
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class MessageBody(BaseModel):
@@ -306,6 +322,7 @@ class SmartLinkBody(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     slug: str | None = Field(default=None, max_length=180)
     links: dict[str, str] = Field(default_factory=dict)
+    active: bool = True
 
 
 class NewsBody(BaseModel):
@@ -586,9 +603,9 @@ def request_payout(body: PayoutBody, user=Depends(current_user)):
         available = float(accrued_row["total"] or 0) - float(used_row["total"] or 0)
         if body.amount > available:
             raise HTTPException(400, "Сумма больше доступного баланса")
-        cur = con.execute("""INSERT INTO payout_requests(user_id,amount,card_number,status,created_at,updated_at)
-                          VALUES(?,?,?,?,?,?)""",
-                          (user["id"], body.amount, body.card_number, "Ожидает выплаты", now(), now()))
+        cur = con.execute("""INSERT INTO payout_requests(user_id,amount,card_number,holder,bank,status,created_at,updated_at)
+                          VALUES(?,?,?,?,?,?,?,?)""",
+                          (user["id"], body.amount, body.card_number, body.holder, body.bank, "Ожидает выплаты", now(), now()))
         staff_rows = con.execute("SELECT id FROM users WHERE role IN ('owner','admin') AND active=1").fetchall()
         for staff_row in staff_rows:
             notify(con, staff_row["id"], "Новая заявка на выплату", f"{user['artist_name']} запросил выплату {body.amount:.2f} ₽")
@@ -619,8 +636,9 @@ def update_payout(payout_id: int, body: PayoutStatusBody, staff=Depends(require_
         payout = con.execute("SELECT * FROM payout_requests WHERE id=?", (payout_id,)).fetchone()
         if not payout:
             raise HTTPException(404, "Заявка не найдена")
-        con.execute("UPDATE payout_requests SET status=?,updated_at=? WHERE id=?", (body.status, now(), payout_id))
-        notify(con, payout["user_id"], "Статус выплаты обновлён", f"Ваша заявка на выплату: {body.status}")
+        reason = body.reason if body.status == "Отклонено" else None
+        con.execute("UPDATE payout_requests SET status=?,rejection_reason=?,updated_at=? WHERE id=?", (body.status, reason, now(), payout_id))
+        notify(con, payout["user_id"], "Статус выплаты обновлён", f"Ваша заявка на выплату: {body.status}" + (f". Причина: {reason}" if reason else ""))
     return {"ok": True, "status": body.status}
 
 
@@ -740,6 +758,8 @@ def list_smart_links(user=Depends(current_user)):
         item = row_dict(row)
         item["links"] = json.loads(item["links"])
         item["url"] = f"/p/{item['slug']}"
+        item["active"] = bool(item.get("active", 1))
+        item["clicks"] = item.get("clicks") or 0
         result.append(item)
     return result
 
@@ -759,10 +779,40 @@ def create_smart_link(body: SmartLinkBody, user=Depends(current_user)):
         while con.execute("SELECT 1 FROM smart_links WHERE slug=?", (slug,)).fetchone():
             slug = f"{base}-{counter}"
             counter += 1
-        cur = con.execute("""INSERT INTO smart_links(user_id,release_id,title,slug,links,created_at)
-                          VALUES(?,?,?,?,?,?)""",
-                          (user["id"], body.release_id, body.title, slug, json.dumps(body.links, ensure_ascii=False), now()))
-    return {"id": cur.lastrowid, "title": body.title, "slug": slug, "links": body.links, "url": f"/p/{slug}"}
+        cur = con.execute("""INSERT INTO smart_links(user_id,release_id,title,slug,links,active,created_at,updated_at)
+                          VALUES(?,?,?,?,?,?,?,?)""",
+                          (user["id"], body.release_id, body.title, slug, json.dumps(body.links, ensure_ascii=False), 1 if body.active else 0, now(), now()))
+    return {"id": cur.lastrowid, "title": body.title, "slug": slug, "links": body.links, "active": body.active, "clicks": 0, "url": f"/p/{slug}"}
+
+
+@app.patch("/smart-links/{link_id}")
+def update_smart_link(link_id: int, body: SmartLinkBody, user=Depends(current_user)):
+    if not body.links:
+        raise HTTPException(400, "Добавьте хотя бы одну ссылку на площадку")
+    base = slugify(body.slug or body.title)
+    slug = base
+    with db() as con:
+        row = con.execute("SELECT * FROM smart_links WHERE id=? AND user_id=?", (link_id, user["id"])).fetchone()
+        if not row:
+            raise HTTPException(404, "Линкс не найден")
+        if body.release_id:
+            release = con.execute("SELECT id FROM releases WHERE id=? AND user_id=?", (body.release_id, user["id"])).fetchone()
+            if not release:
+                raise HTTPException(404, "Релиз не найден")
+        counter = 2
+        while con.execute("SELECT 1 FROM smart_links WHERE slug=? AND id!=?", (slug, link_id)).fetchone():
+            slug = f"{base}-{counter}"
+            counter += 1
+        con.execute("""UPDATE smart_links SET release_id=?,title=?,slug=?,links=?,active=?,updated_at=?
+                    WHERE id=? AND user_id=?""",
+                    (body.release_id, body.title, slug, json.dumps(body.links, ensure_ascii=False), 1 if body.active else 0, now(), link_id, user["id"]))
+        updated = con.execute("SELECT * FROM smart_links WHERE id=?", (link_id,)).fetchone()
+    item = row_dict(updated)
+    item["links"] = json.loads(item["links"])
+    item["active"] = bool(item.get("active", 1))
+    item["clicks"] = item.get("clicks") or 0
+    item["url"] = f"/p/{item['slug']}"
+    return item
 
 
 @app.delete("/smart-links/{link_id}")
@@ -783,10 +833,18 @@ def public_smart_link(slug: str):
                           JOIN users ON users.id=smart_links.user_id
                           LEFT JOIN releases ON releases.id=smart_links.release_id
                           WHERE smart_links.slug=?""", (slug,)).fetchone()
-        if not row:
+        if not row or not row["active"]:
             raise HTTPException(404, "Линкс не найден")
+        con.execute("UPDATE smart_links SET clicks=COALESCE(clicks,0)+1 WHERE id=?", (row["id"],))
+        row = con.execute("""SELECT smart_links.*,users.artist_name,releases.cover_url
+                          FROM smart_links
+                          JOIN users ON users.id=smart_links.user_id
+                          LEFT JOIN releases ON releases.id=smart_links.release_id
+                          WHERE smart_links.id=?""", (row["id"],)).fetchone()
     item = row_dict(row)
     item["links"] = json.loads(item["links"])
+    item["active"] = bool(item.get("active", 1))
+    item["clicks"] = item.get("clicks") or 0
     return item
 
 
