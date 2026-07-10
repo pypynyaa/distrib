@@ -102,7 +102,7 @@ def initialize():
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL,
       artist_name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'artist', active INTEGER DEFAULT 1,
-      avatar_url TEXT, bio TEXT, city TEXT, country TEXT, genres TEXT, social_links TEXT,
+      avatar_url TEXT, bio TEXT, city TEXT, country TEXT, genres TEXT, social_links TEXT, block_reason TEXT,
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
@@ -154,6 +154,10 @@ def initialize():
       title TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, links TEXT NOT NULL, active INTEGER DEFAULT 1,
       clicks INTEGER DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY, actor_id INTEGER REFERENCES users(id), target_user_id INTEGER REFERENCES users(id),
+      action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL
+    );
     """
     with db() as con:
         con.executescript(schema)
@@ -165,6 +169,8 @@ def initialize():
         for column in ("city", "country", "genres", "social_links"):
             if column not in user_columns:
                 con.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT")
+        if "block_reason" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN block_reason TEXT")
         release_columns = {row["name"] for row in con.execute("PRAGMA table_info(releases)").fetchall()}
         if "upc" not in release_columns:
             con.execute("ALTER TABLE releases ADD COLUMN upc TEXT")
@@ -304,6 +310,7 @@ class AdminBody(BaseModel):
 
 class AccountStatusBody(BaseModel):
     active: bool
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class PromoRequestBody(BaseModel):
@@ -858,7 +865,7 @@ def admins(staff=Depends(require_staff)):
 @app.get("/admin/accounts")
 def accounts(staff=Depends(require_staff)):
     with db() as con:
-        rows = con.execute("""SELECT users.id,users.email,users.artist_name,users.role,users.active,users.created_at,
+        rows = con.execute("""SELECT users.id,users.email,users.artist_name,users.role,users.active,users.created_at,users.block_reason,
                            COALESCE(finance_totals.balance,0) AS balance,
                            COALESCE(payout_totals.paid,0) AS paid
                            FROM users
@@ -875,10 +882,26 @@ def accounts(staff=Depends(require_staff)):
 @app.patch("/admin/accounts/{user_id}")
 def update_account_status(user_id: int, body: AccountStatusBody, staff=Depends(require_staff)):
     with db() as con:
-        result = con.execute("UPDATE users SET active=? WHERE id=? AND role='artist'", (1 if body.active else 0, user_id))
+        reason = None if body.active else (body.reason or "Нарушение правил сервиса")
+        result = con.execute("UPDATE users SET active=?,block_reason=? WHERE id=? AND role='artist'", (1 if body.active else 0, reason, user_id))
         if not result.rowcount:
             raise HTTPException(404, "Кабинет не найден")
-    return {"ok": True, "active": body.active}
+        con.execute("""INSERT INTO audit_logs(actor_id,target_user_id,action,details,created_at)
+                    VALUES(?,?,?,?,?)""",
+                    (staff["id"], user_id, "account_unblocked" if body.active else "account_blocked", reason, now()))
+        notify(con, user_id, "Статус аккаунта обновлён", "Ваш аккаунт разблокирован." if body.active else f"Ваш аккаунт заблокирован. Причина: {reason}")
+    return {"ok": True, "active": body.active, "reason": reason}
+
+
+@app.get("/admin/audit-logs")
+def audit_logs(staff=Depends(require_staff)):
+    with db() as con:
+        rows = con.execute("""SELECT audit_logs.*,actor.artist_name AS actor_name,target.artist_name AS target_name
+                           FROM audit_logs
+                           LEFT JOIN users actor ON actor.id=audit_logs.actor_id
+                           LEFT JOIN users target ON target.id=audit_logs.target_user_id
+                           ORDER BY audit_logs.id DESC LIMIT 100""").fetchall()
+    return [row_dict(x) for x in rows]
 
 
 @app.post("/admin/users", status_code=201)
