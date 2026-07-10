@@ -102,7 +102,8 @@ def initialize():
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL,
       artist_name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'artist', active INTEGER DEFAULT 1,
-      avatar_url TEXT, bio TEXT, created_at TEXT NOT NULL
+      avatar_url TEXT, bio TEXT, city TEXT, country TEXT, genres TEXT, social_links TEXT,
+      created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -159,6 +160,9 @@ def initialize():
             con.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
         if "bio" not in user_columns:
             con.execute("ALTER TABLE users ADD COLUMN bio TEXT")
+        for column in ("city", "country", "genres", "social_links"):
+            if column not in user_columns:
+                con.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT")
         release_columns = {row["name"] for row in con.execute("PRAGMA table_info(releases)").fetchall()}
         if "upc" not in release_columns:
             con.execute("ALTER TABLE releases ADD COLUMN upc TEXT")
@@ -269,6 +273,10 @@ class TicketStatusBody(BaseModel):
 class ProfileBody(BaseModel):
     artist_name: str = Field(min_length=2, max_length=80)
     bio: str | None = Field(default=None, max_length=2000)
+    city: str | None = Field(default=None, max_length=80)
+    country: str | None = Field(default=None, max_length=80)
+    genres: list[str] = Field(default_factory=list)
+    social_links: dict[str, str] = Field(default_factory=dict)
 
 
 class AdminBody(BaseModel):
@@ -397,15 +405,29 @@ def upload_file(file: UploadFile = File(...), user=Depends(current_user)):
 def me(user=Depends(current_user)):
     safe = dict(user)
     safe.pop("password", None)
+    for key in ("genres", "social_links"):
+        if safe.get(key):
+            try:
+                safe[key] = json.loads(safe[key])
+            except json.JSONDecodeError:
+                safe[key] = [] if key == "genres" else {}
+        else:
+            safe[key] = [] if key == "genres" else {}
     return safe
 
 
 @app.patch("/me")
 def update_profile(body: ProfileBody, user=Depends(current_user)):
     with db() as con:
-        con.execute("UPDATE users SET artist_name=?,bio=? WHERE id=?", (body.artist_name, body.bio, user["id"]))
-        updated = con.execute("SELECT id,email,artist_name,role,active,avatar_url,bio,created_at FROM users WHERE id=?", (user["id"],)).fetchone()
-    return row_dict(updated)
+        con.execute("""UPDATE users SET artist_name=?,bio=?,city=?,country=?,genres=?,social_links=? WHERE id=?""",
+                    (body.artist_name, body.bio, body.city, body.country,
+                     json.dumps(body.genres, ensure_ascii=False),
+                     json.dumps(body.social_links, ensure_ascii=False), user["id"]))
+        updated = con.execute("SELECT id,email,artist_name,role,active,avatar_url,bio,city,country,genres,social_links,created_at FROM users WHERE id=?", (user["id"],)).fetchone()
+    data = row_dict(updated)
+    data["genres"] = json.loads(data["genres"] or "[]")
+    data["social_links"] = json.loads(data["social_links"] or "{}")
+    return data
 
 
 @app.post("/me/avatar", status_code=201)
@@ -438,6 +460,14 @@ def login(body: LoginBody):
         token = secrets.token_urlsafe(32)
         con.execute("INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)", (token, user["id"], now()))
     safe = row_dict(user); safe.pop("password")
+    for key in ("genres", "social_links"):
+        if safe.get(key):
+            try:
+                safe[key] = json.loads(safe[key])
+            except json.JSONDecodeError:
+                safe[key] = [] if key == "genres" else {}
+        else:
+            safe[key] = [] if key == "genres" else {}
     return {"token": token, "user": safe}
 
 
