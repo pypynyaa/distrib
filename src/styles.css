@@ -158,6 +158,7 @@ aside nav button i{width:22px;height:22px;font-size:12px}
 .promo-mini b{font-size:15px}.promo-mini p,.promo-mini button{font-size:12px}
 .user-mini{padding:21px 8px 10px;border-radius:14px}.user-mini:hover{background:#ffffff0b}
 .user-mini>span,.avatar{width:40px;height:40px;font-size:13px}
+.user-mini>span{overflow:hidden}.user-mini>span img{width:100%;height:100%;object-fit:cover;border-radius:inherit}
 .user-mini b{font-size:14px}.user-mini small{font-size:12px}
 header h2{font-size:21px}header>div:first-of-type span{font-size:10px}
 .page-title h1{font-size:34px}.page-title p{font-size:14px;line-height:1.55}
