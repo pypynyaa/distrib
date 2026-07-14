@@ -5,4 +5,5 @@ __pycache__/
 *.pyc
 backend/insomnia.db
 backend/uploads/
+tmp-visual-audit/
 .DS_Store

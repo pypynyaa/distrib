@@ -182,3 +182,15 @@ textarea{min-height:140px}.primary,.secondary,.white-btn{font-size:14px;min-heig
 .message p{font-size:14px;padding:13px 16px}.message small{font-size:11px}.composer{padding:16px 20px}.composer input{font-size:14px;min-height:52px}.send{width:52px;min-width:52px;border-radius:15px}
 .profile-avatar small{font-size:13px}.form-inner h2{font-size:32px}.form-inner>p{font-size:14px}
 @media(max-width:760px){.page-title h1{font-size:29px}.hello h1,.promo-hero h1{font-size:32px}.panel{padding:20px}.primary,.secondary,.white-btn{width:auto}.metrics{grid-template-columns:1fr}.release-row{grid-template-columns:52px 1fr auto}}
+
+@media(max-width:760px){
+  .support.support-admin{display:block;padding:18px;background:transparent;height:auto;min-height:calc(100vh - 68px)}
+  .support-admin .support-list{display:block;border:1px solid var(--line);border-radius:22px;padding:20px;margin-bottom:18px;background:#fff}
+  .support-admin .support-title{padding:0 0 16px}
+  .support-admin .ticket{padding:14px;border-radius:16px}
+  .support-admin .ticket small{font-size:12px}
+  .support-admin .chat{border:1px solid var(--line);border-radius:22px;overflow:hidden;min-height:620px;background:#fff}
+  .support-admin .messages{min-height:420px}
+  .support-admin .composer{gap:10px}
+  html[data-theme="dark"] .support-admin .support-list,html[data-theme="dark"] .support-admin .chat{background:#17151e;border-color:#302d3b}
+}
